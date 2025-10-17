@@ -1,4 +1,5 @@
 const fs = require('fs');
+const https = require('https');
 
 const KEYWORDS = [
   'battery', 'batteries', 'energy storage', 'bess', 'powerwall',
@@ -19,6 +20,22 @@ function getMonthYear(ago) {
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
 }
 
+function httpsGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          reject(e);
+        }
+      });
+    }).on('error', reject);
+  });
+}
+
 async function fetchSell2Wales() {
   console.log('Fetching Sell2Wales...');
   const all = [];
@@ -26,12 +43,11 @@ async function fetchSell2Wales() {
   for (let m = 0; m < 6; m++) {
     for (const t of [1, 2, 3, 7]) {
       try {
-        const r = await fetch(`https://api.sell2wales.gov.wales/v1/Notices?dateFrom=${getMonthYear(m)}&noticeType=${t}&outputType=0&locale=2057`);
-        if (r.ok) {
-          const d = await r.json();
-          if (d.releases) all.push(...d.releases);
-        }
-      } catch (e) {}
+        const data = await httpsGet(`https://api.sell2wales.gov.wales/v1/Notices?dateFrom=${getMonthYear(m)}&noticeType=${t}&outputType=0&locale=2057`);
+        if (data.releases) all.push(...data.releases);
+      } catch (e) {
+        console.log(`Sell2Wales error: ${e.message}`);
+      }
     }
   }
 
@@ -59,16 +75,18 @@ async function fetchSell2Wales() {
 async function fetchFindATender() {
   console.log('Fetching Find a Tender...');
   const all = [];
-  let next = 'https://www.find-tender.service.gov.uk/api/1.0/ocdsReleasePackages';
+  let url = 'https://www.find-tender.service.gov.uk/api/1.0/ocdsReleasePackages';
 
-  while (next && all.length < 2000) {
+  while (url && all.length < 2000) {
     try {
-      const r = await fetch(next);
-      if (!r.ok) break;
-      const d = await r.json();
-      if (d.releases) all.push(...d.releases);
-      next = d.links?.next || null;
-    } catch (e) { break; }
+      const data = await httpsGet(url);
+      if (data.releases) all.push(...data.releases);
+      url = data.links?.next || null;
+      console.log(`  Fetched ${all.length} so far...`);
+    } catch (e) {
+      console.log(`Find a Tender error: ${e.message}`);
+      break;
+    }
   }
 
   const filtered = all.filter(r => matches((r.tender?.title || '') + ' ' + (r.tender?.description || r.description || '')));
@@ -94,16 +112,18 @@ async function fetchFindATender() {
 async function fetchContractsFinder() {
   console.log('Fetching Contracts Finder...');
   const all = [];
-  let next = 'https://www.contractsfinder.service.gov.uk/Published/Notices/OCDS/Search?order=publishedDate&stage=active';
+  let url = 'https://www.contractsfinder.service.gov.uk/Published/Notices/OCDS/Search?order=publishedDate&stage=active';
 
-  while (next && all.length < 2000) {
+  while (url && all.length < 2000) {
     try {
-      const r = await fetch(next);
-      if (!r.ok) break;
-      const d = await r.json();
-      if (d.releases) all.push(...d.releases);
-      next = d.links?.next || null;
-    } catch (e) { break; }
+      const data = await httpsGet(url);
+      if (data.releases) all.push(...data.releases);
+      url = data.links?.next || null;
+      console.log(`  Fetched ${all.length} so far...`);
+    } catch (e) {
+      console.log(`Contracts Finder error: ${e.message}`);
+      break;
+    }
   }
 
   const filtered = all.filter(r => matches((r.tender?.title || '') + ' ' + (r.tender?.description || r.description || '')));
@@ -128,6 +148,8 @@ async function fetchContractsFinder() {
 }
 
 async function main() {
+  console.log('Starting tender fetch...');
+  
   const results = {
     lastUpdated: new Date().toISOString(),
     stats: {},
@@ -138,6 +160,7 @@ async function main() {
     const s2w = await fetchSell2Wales();
     results.stats.sell2Wales = { success: true, totalFetched: s2w.raw, energyRelated: s2w.filtered };
     results.tenders.push(...s2w.data);
+    console.log(`Sell2Wales: ${s2w.filtered} energy tenders from ${s2w.raw} total`);
   } catch (e) {
     results.stats.sell2Wales = { success: false, error: e.message };
   }
@@ -146,6 +169,7 @@ async function main() {
     const fat = await fetchFindATender();
     results.stats.findATender = { success: true, totalFetched: fat.raw, energyRelated: fat.filtered };
     results.tenders.push(...fat.data);
+    console.log(`Find a Tender: ${fat.filtered} energy tenders from ${fat.raw} total`);
   } catch (e) {
     results.stats.findATender = { success: false, error: e.message };
   }
@@ -154,10 +178,12 @@ async function main() {
     const cf = await fetchContractsFinder();
     results.stats.contractsFinder = { success: true, totalFetched: cf.raw, energyRelated: cf.filtered };
     results.tenders.push(...cf.data);
+    console.log(`Contracts Finder: ${cf.filtered} energy tenders from ${cf.raw} total`);
   } catch (e) {
     results.stats.contractsFinder = { success: false, error: e.message };
   }
 
+  // Sort by deadline
   results.tenders.sort((a, b) => {
     if (a.deadline === 'Not specified') return 1;
     if (b.deadline === 'Not specified') return -1;
@@ -167,7 +193,11 @@ async function main() {
   results.totalEnergyTenders = results.tenders.length;
 
   fs.writeFileSync('tenders-data.json', JSON.stringify(results, null, 2));
-  console.log(`Done! ${results.totalEnergyTenders} battery/energy tenders found.`);
+  console.log(`\n✅ DONE! Found ${results.totalEnergyTenders} battery/energy storage tenders.`);
+  console.log('Results saved to tenders-data.json');
 }
 
-main().catch(console.error);
+main().catch(err => {
+  console.error('Fatal error:', err);
+  process.exit(1);
+});
