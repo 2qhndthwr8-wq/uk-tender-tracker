@@ -1,0 +1,1 @@
+{\n  "name": "uk-tender-tracker",\n  "version": "1.0.0",\n  "description": "UK tender tracker helper",\n  "private": true,\n  "dependencies": {\n    "axios": "^1.4.0"\n  }\n}
