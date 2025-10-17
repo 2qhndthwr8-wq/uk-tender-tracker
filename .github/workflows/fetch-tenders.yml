@@ -1,0 +1,30 @@
+name: Fetch UK Tenders Daily
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  fetch-tenders:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Fetch tenders
+        run: node fetch-tenders-script.js
+      
+      - name: Commit results
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add tenders-data.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update tenders - $(date +'%Y-%m-%d')"
+          git push
